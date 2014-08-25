@@ -316,23 +316,25 @@ static EFI_STATUS AppleSetOs(IN CHAR16 *OsVendor,
   // firstly, retrieve the Protocol by GUID:
   Status = refit_call3_wrapper(gBS->LocateProtocol, &gEfiAppleSetOsProtocolGuid, NULL, (VOID**) &appleSetOs);
   if (EFI_ERROR (Status)) {
-    Print(L"Unable to retrieve the apple_set_os protocol! This machine is probably not a >=10.x Mac.");
+    Print(L"Unable to retrieve the apple_set_os protocol! This machine is probably not a >=10.x Mac.\n");
     return Status;
   }
 
-  Print(L"Successfully retrieved apple_set_os protocol! Setting vendor to '%s', version to '%s'.", OsVendor, OsVersion);
+  Print(L"Successfully retrieved apple_set_os protocol, version is %L*X. Setting vendor to '%s', version to '%s'.\n", appleSetOs->Version, OsVendor, OsVersion);
 
   // TODO: check the protocol's version field
 
   Status = refit_call1_wrapper(appleSetOs->SetVersion, OsVersion);
   if (EFI_ERROR (Status)) {
-    Print(L"Failure setting OS version with apple_set_os: %r", Status);
+    Print(L"Failure setting OS version with apple_set_os: %r\n", Status);
+    PauseForKey();
     return Status;
   }
 
   Status = refit_call1_wrapper(appleSetOs->SetVendor, OsVendor);
   if (EFI_ERROR (Status)) {
-    Print(L"Failure setting OS version with apple_set_os: %r", Status);
+    Print(L"Failure setting OS vendor with apple_set_os: %r\n", Status);
+    PauseForKey();
     return Status;
   }
 
@@ -346,7 +348,7 @@ static VOID FakeAppleOSIfPossible() {
   // we're blindly attempting it on all hardware (shockingly, seems
   // that there's no standard way to ask for hardware vendor/model
   // with EFI!)
-  Print(L"Checking if this is a Mac, and, if so, turning faking OS ID to re-enable Intel IGD...");
+  Print(L"Checking if this is a Mac, and, if so, turning faking OS ID to re-enable Intel IGD...\n");
   AppleSetOs(L"Apple Inc.", L"Mac OS X 10.9");
 } // VOID FakeAppleOSIfPossible
 
@@ -383,15 +385,14 @@ static EFI_STATUS StartEFIImageList(IN EFI_DEVICE_PATH **DevicePaths,
     if (Verbose)
        Print(L"Starting %s\nUsing load options '%s'\n", ImageTitle, FullLoadOptions ? FullLoadOptions : L"");
 
-    // Mac hardware quirk: call AppleSetOs if we're booting neither OS
-    // X or Windows, in order to nerdy OSes like Linux or BSD full
-    // access to the graphics hardware.  Sadly, this should be at
-    // least overridable (there are some enterprising folks out there
-    // that want to boot Windows with this hack, too), but there seems
-    // to be no affordance in refind for putting config metadata on
-    // the boot item, and we definitely do not want to boot Windows by
-    // default with the IGD turned on).
-    if ((OSType != 'M' && OSType != 'W')) {
+    // Mac hardware quirk: call AppleSetOs if we're booting Linux.
+    // Sadly, this should be at least overridable (there are some
+    // enterprising folks out there that want to boot Windows with
+    // this hack, too) in config, but there seems to be no affordance
+    // in refind for putting config metadata on the boot item, and we
+    // definitely do not want to boot Windows by default with the IGD
+    // turned on).
+    if (OSType == 'L') {
       FakeAppleOSIfPossible();
     }
 
