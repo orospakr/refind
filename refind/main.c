@@ -283,6 +283,73 @@ static BOOLEAN IsValidLoader(EFI_FILE *RootDir, CHAR16 *FileName) {
     return IsValid;
 } // BOOLEAN IsValidLoader()
 
+
+// Call the apple_set_os protocol in Apple's EFI implementation.
+//
+// Apple's firmware, on the hybrid graphics models of Macbook Pro 10,x
+// and 11,x (any others?), on booting an OS that does not identify
+// itself using this proprietary EFI protocol, disables the onboard
+// Intel graphcs, and puts the hardware into a special mode (what,
+// exactly?) in which the discrete Nvidia GPU is connected directly to
+// the panel (in normal, OS X operation, the Intel card owns it, and
+// the Nvidia GPU typically does offscreen rendering and also owns the
+// HDMI port).
+// 
+// The value in calling this routine and lying to the firmware that
+// we're booting OS X (see FakeAppleOSIfPossible()) is to convince
+// Apple's firmware that the OS we're about to boot is grown-up enough
+// to handle the full hardware, that is to unlock the use of the
+// integrated graphics.
+//
+// Full credit to Andreas Heider for discovery of this trick.
+static EFI_STATUS AppleSetOs(IN CHAR16 *OsVendor,
+                             IN CHAR16 *OsVersion
+                             )
+{
+  EFI_STATUS Status;
+  EFI_APPLE_SET_OS_PROTOCOL *appleSetOs = NULL;
+  // A port of Andreas Heider's code for efi grub.  He gets credit for
+  // the original research and finding this Protocol in Apple's EFI (I
+  // don't really know how he did this -- scanning EFI tables?)
+  // http://lists.gnu.org/archive/html/grub-devel/2013-12/msg00442.html
+
+  // firstly, retrieve the Protocol by GUID:
+  Status = refit_call3_wrapper(gBS->LocateProtocol, &gEfiAppleSetOsProtocolGuid, NULL, (VOID**) &appleSetOs);
+  if (EFI_ERROR (Status)) {
+    Print(L"Unable to retrieve the apple_set_os protocol! This machine is probably not a >=10.x Mac.");
+    return Status;
+  }
+
+  Print(L"Successfully retrieved apple_set_os protocol! Setting vendor to '%s', version to '%s'.", OsVendor, OsVersion);
+
+  // TODO: check the protocol's version field
+
+  Status = refit_call1_wrapper(appleSetOs->SetVersion, OsVersion);
+  if (EFI_ERROR (Status)) {
+    Print(L"Failure setting OS version with apple_set_os: %r", Status);
+    return Status;
+  }
+
+  Status = refit_call1_wrapper(appleSetOs->SetVendor, OsVendor);
+  if (EFI_ERROR (Status)) {
+    Print(L"Failure setting OS version with apple_set_os: %r", Status);
+    return Status;
+  }
+
+  return Status;
+} // EFI_STATUS AppleSetOs
+
+// Use AppleSetOs to fake OS X.  See AppleSetOs() docstring for
+// details.
+static VOID FakeAppleOSIfPossible() {
+  // Call AppleSetOs() and ignore any errors if they occur, since
+  // we're blindly attempting it on all hardware (shockingly, seems
+  // that there's no standard way to ask for hardware vendor/model
+  // with EFI!)
+  Print(L"Checking if this is a Mac, and, if so, turning faking OS ID to re-enable Intel IGD...");
+  AppleSetOs(L"Apple Inc.", L"Mac OS X 10.9");
+} // VOID FakeAppleOSIfPossible
+
 // Launch an EFI binary.
 static EFI_STATUS StartEFIImageList(IN EFI_DEVICE_PATH **DevicePaths,
                                     IN CHAR16 *LoadOptions, IN UINTN LoaderType,
@@ -315,6 +382,18 @@ static EFI_STATUS StartEFIImageList(IN EFI_DEVICE_PATH **DevicePaths,
     } // if (LoadOptions != NULL)
     if (Verbose)
        Print(L"Starting %s\nUsing load options '%s'\n", ImageTitle, FullLoadOptions ? FullLoadOptions : L"");
+
+    // Mac hardware quirk: call AppleSetOs if we're booting neither OS
+    // X or Windows, in order to nerdy OSes like Linux or BSD full
+    // access to the graphics hardware.  Sadly, this should be at
+    // least overridable (there are some enterprising folks out there
+    // that want to boot Windows with this hack, too), but there seems
+    // to be no affordance in refind for putting config metadata on
+    // the boot item, and we definitely do not want to boot Windows by
+    // default with the IGD turned on).
+    if ((OSType != 'M' && OSType != 'W')) {
+      FakeAppleOSIfPossible();
+    }
 
     // load the image into memory (and execute it, in the case of a shim/MOK image).
     ReturnStatus = Status = EFI_NOT_FOUND;  // in case the list is empty
@@ -450,76 +529,6 @@ static VOID StoreLoaderName(IN CHAR16 *Name) {
       MyFreePool(OldName);
    } // if
 } // VOID StoreLoaderName()
-
-// Call the apple_set_os protocol in Apple's EFI implementation, and
-// lie to it that we're about to boot OS X 10.9.
-//
-// Apple's firmware, on the hybrid graphics models of Macbook Pro 10,x
-// and 11,x (any others?), on booting an OS that does not identify
-// itself using this proprietary EFI protocol, disables the onboard
-// Intel graphcs, and puts the hardware into a special mode (what,
-// exactly?) in which the discrete Nvidia GPU is connected directly to
-// the panel (in normal, OS X operation, the Intel card owns it, and
-// the Nvidia GPU typically does offscreen rendering and also owns the
-// HDMI port).
-// 
-// The value in calling this routine and lying to the firmware is to
-// convince Apple's firmware that the OS we're about to boot is
-// grown-up enough to handle the full hardware, that is to unlock the
-// use of the integrated graphics.
-//
-// Full credit to Andreas Heider for discovery of this trick.
-static EFI_STATUS AppleSetOs() {
-  EG_PIXEL BGColor;
-  EFI_STATUS Status;
-  EFI_APPLE_SET_OS_PROTOCOL *appleSetOs = NULL;
-  // A port of Andreas Heider's code for efi grub.  He gets credit for
-  // the original research and finding this Protocol in Apple's EFI (I
-  // don't really know how he did this -- scanning EFI tables?
-  // http://lists.gnu.org/archive/html/grub-devel/2013-12/msg00442.html
-
-  // firstly, retrieve the Protocol by GUID:
-  Status = refit_call3_wrapper(gBS->LocateProtocol, &gEfiAppleSetOsProtocolGuid, NULL, (VOID**) &appleSetOs);
-  if (EFI_ERROR (Status)) {
-    BGColor.b = 0;
-    BGColor.r = 255;
-    BGColor.g = 0;
-    BGColor.a = 0;
-    egDisplayMessage(L"Unable to retrieve apple_set_os protocol! Not a new Mac?", &BGColor);
-    return Status;
-  }
-
-  BGColor.b = 127;
-  BGColor.r = 0;
-  BGColor.g = 255;
-  BGColor.a = 0;
-
-  egDisplayMessage(L"Successfully retrieved apple_set_os protocol! Faking OS X...", &BGColor);
-
-  // TODO: check the protocol version
-
-  Status = refit_call1_wrapper(appleSetOs->SetVersion, L"Mac OS X 10.9");
-  if (EFI_ERROR (Status)) {
-    BGColor.b = 0;
-    BGColor.r = 255;
-    BGColor.g = 0;
-    BGColor.a = 0;
-    egDisplayMessage(L"UNABLE TO SET OS VERSION!", &BGColor);
-    return Status;
-  }
-
-  Status = refit_call1_wrapper(appleSetOs->SetVendor, L"Mac OS X 10.9");
-  if (EFI_ERROR (Status)) {
-    BGColor.b = 0;
-    BGColor.r = 255;
-    BGColor.g = 0;
-    BGColor.a = 0;
-    egDisplayMessage(L"UNABLE TO SET OS VENDOR!", &BGColor);
-    return Status;
-  }
-
-  return Status;
-}
 
 //
 // EFI OS loader functions
@@ -2636,9 +2645,6 @@ efi_main (EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     ScanForTools();
     SetupScreen();
 
-
-    
-
     if (GlobalConfig.ScanDelay > 0) {
        BGColor.b = 255;
        BGColor.g = 175;
@@ -2650,9 +2656,6 @@ efi_main (EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
           refit_call1_wrapper(BS->Stall, 1000000);
        RescanAll(GlobalConfig.ScanDelay > 1);
     } // if
-
-    
-    AppleSetOs();
 
     if (GlobalConfig.DefaultSelection)
        SelectionName = StrDuplicate(GlobalConfig.DefaultSelection);
