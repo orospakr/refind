@@ -127,6 +127,27 @@
 #define TYPE_EFI    1
 #define TYPE_LEGACY 2
 
+// Apple OS apple_set_os hacks:
+EFI_GUID gEfiAppleSetOsProtocolGuid = { 0xc5c5da95, 0x7d5c, 0x45e6, { 0xb2, 0xf1, 0x3f, 0xd5, 0x2b, 0xb1, 0x00, 0x77 }};
+
+typedef
+EFI_STATUS
+(EFIAPI *EFI_APPLE_SET_OS_PROTOCOL_SET_VERSION) (
+                                                 IN CHAR8 *Version
+                                                 );
+typedef
+EFI_STATUS
+(EFIAPI *EFI_APPLE_SET_OS_PROTOCOL_SET_VENDOR) (
+                                                 IN CHAR8 *Vendor
+                                                );
+
+
+typedef struct _EFI_APPLE_SET_OS_PROTOCOL {
+  UINT64                                        Version;
+  EFI_APPLE_SET_OS_PROTOCOL_SET_VERSION         SetVersion;
+  EFI_APPLE_SET_OS_PROTOCOL_SET_VENDOR          SetVendor;
+} EFI_APPLE_SET_OS_PROTOCOL;
+
 static REFIT_MENU_ENTRY MenuEntryAbout    = { L"About rEFInd", TAG_ABOUT, 1, 0, 'A', NULL, NULL, NULL };
 static REFIT_MENU_ENTRY MenuEntryReset    = { L"Reboot Computer", TAG_REBOOT, 1, 0, 'R', NULL, NULL, NULL };
 static REFIT_MENU_ENTRY MenuEntryShutdown = { L"Shut Down Computer", TAG_SHUTDOWN, 1, 0, 'U', NULL, NULL, NULL };
@@ -429,6 +450,76 @@ static VOID StoreLoaderName(IN CHAR16 *Name) {
       MyFreePool(OldName);
    } // if
 } // VOID StoreLoaderName()
+
+// Call the apple_set_os protocol in Apple's EFI implementation, and
+// lie to it that we're about to boot OS X 10.9.
+//
+// Apple's firmware, on the hybrid graphics models of Macbook Pro 10,x
+// and 11,x (any others?), on booting an OS that does not identify
+// itself using this proprietary EFI protocol, disables the onboard
+// Intel graphcs, and puts the hardware into a special mode (what,
+// exactly?) in which the discrete Nvidia GPU is connected directly to
+// the panel (in normal, OS X operation, the Intel card owns it, and
+// the Nvidia GPU typically does offscreen rendering and also owns the
+// HDMI port).
+// 
+// The value in calling this routine and lying to the firmware is to
+// convince Apple's firmware that the OS we're about to boot is
+// grown-up enough to handle the full hardware, that is to unlock the
+// use of the integrated graphics.
+//
+// Full credit to Andreas Heider for discovery of this trick.
+static EFI_STATUS AppleSetOs() {
+  EG_PIXEL BGColor;
+  EFI_STATUS Status;
+  EFI_APPLE_SET_OS_PROTOCOL *appleSetOs = NULL;
+  // A port of Andreas Heider's code for efi grub.  He gets credit for
+  // the original research and finding this Protocol in Apple's EFI (I
+  // don't really know how he did this -- scanning EFI tables?
+  // http://lists.gnu.org/archive/html/grub-devel/2013-12/msg00442.html
+
+  // firstly, retrieve the Protocol by GUID:
+  Status = refit_call3_wrapper(gBS->LocateProtocol, &gEfiAppleSetOsProtocolGuid, NULL, (VOID**) &appleSetOs);
+  if (EFI_ERROR (Status)) {
+    BGColor.b = 0;
+    BGColor.r = 255;
+    BGColor.g = 0;
+    BGColor.a = 0;
+    egDisplayMessage(L"Unable to retrieve apple_set_os protocol! Not a new Mac?", &BGColor);
+    return Status;
+  }
+
+  BGColor.b = 127;
+  BGColor.r = 0;
+  BGColor.g = 255;
+  BGColor.a = 0;
+
+  egDisplayMessage(L"Successfully retrieved apple_set_os protocol! Faking OS X...", &BGColor);
+
+  // TODO: check the protocol version
+
+  Status = refit_call1_wrapper(appleSetOs->SetVersion, L"Mac OS X 10.9");
+  if (EFI_ERROR (Status)) {
+    BGColor.b = 0;
+    BGColor.r = 255;
+    BGColor.g = 0;
+    BGColor.a = 0;
+    egDisplayMessage(L"UNABLE TO SET OS VERSION!", &BGColor);
+    return Status;
+  }
+
+  Status = refit_call1_wrapper(appleSetOs->SetVendor, L"Mac OS X 10.9");
+  if (EFI_ERROR (Status)) {
+    BGColor.b = 0;
+    BGColor.r = 255;
+    BGColor.g = 0;
+    BGColor.a = 0;
+    egDisplayMessage(L"UNABLE TO SET OS VENDOR!", &BGColor);
+    return Status;
+  }
+
+  return Status;
+}
 
 //
 // EFI OS loader functions
@@ -2545,6 +2636,9 @@ efi_main (EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     ScanForTools();
     SetupScreen();
 
+
+    
+
     if (GlobalConfig.ScanDelay > 0) {
        BGColor.b = 255;
        BGColor.g = 175;
@@ -2556,6 +2650,9 @@ efi_main (EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
           refit_call1_wrapper(BS->Stall, 1000000);
        RescanAll(GlobalConfig.ScanDelay > 1);
     } // if
+
+    
+    AppleSetOs();
 
     if (GlobalConfig.DefaultSelection)
        SelectionName = StrDuplicate(GlobalConfig.DefaultSelection);
